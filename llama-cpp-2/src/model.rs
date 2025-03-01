@@ -383,21 +383,23 @@ impl LlamaModel {
             return Ok(b"\n".to_vec());
         }
 
-        // unsure what to do with this in the face of the 'special' arg + attr changes
-        let attrs = self.token_attr(token);
-        if attrs.is_empty()
-            || attrs
-                .intersects(LlamaTokenAttr::Unknown | LlamaTokenAttr::Byte | LlamaTokenAttr::Unused)
-            || attrs.contains(LlamaTokenAttr::Control)
-                && (token == self.token_bos() || token == self.token_eos())
-        {
-            return Ok(Vec::new());
-        }
-
         let special = match special {
             Special::Tokenize => true,
             Special::Plaintext => false,
         };
+
+        if !special {
+            let attrs = self.token_attr(token);
+            if attrs.is_empty()
+                || attrs.intersects(
+                    LlamaTokenAttr::Unknown | LlamaTokenAttr::Byte | LlamaTokenAttr::Unused,
+                )
+                || attrs.contains(LlamaTokenAttr::Control)
+                    && (token == self.token_bos() || token == self.token_eos())
+            {
+                return Ok(Vec::new());
+            }
+        }
 
         let string = CString::new(vec![b'*'; buffer_size]).expect("no null");
         let len = string.as_bytes().len();
