@@ -69,18 +69,33 @@ pub enum LLamaCppError {
 /// There was an error while getting the chat template from a model.
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ChatTemplateError {
-    /// gguf has no chat template
-    #[error("the model has no meta val - returned code {0}")]
-    MissingTemplate(i32),
+    /// gguf has no chat template (by that name)
+    #[error("chat template not found - returned null pointer")]
+    MissingTemplate,
+
+    /// chat template contained a null byte
+    #[error("null byte in string {0}")]
+    NullError(#[from] NulError),
+
     /// The chat template was not valid utf8.
     #[error(transparent)]
     Utf8Error(#[from] std::str::Utf8Error),
 }
 
-enum InternalChatTemplateError {
-    Permanent(ChatTemplateError),
-    /// the buffer was too small.
-    RetryWithLargerBuffer(usize),
+/// Failed fetching metadata value
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub enum MetaValError {
+    /// The provided string contains an unexpected null-byte
+    #[error("null byte in string {0}")]
+    NullError(#[from] NulError),
+
+    /// The returned data contains invalid UTF8 data
+    #[error("FromUtf8Error {0}")]
+    FromUtf8Error(#[from] FromUtf8Error),
+
+    /// Got negative return value. This happens if the key or index queried does not exist.
+    #[error("Negative return value. Likely due to a missing index or key. Got return value: {0}")]
+    NegativeReturn(i32),
 }
 
 /// Failed to Load context
@@ -202,6 +217,8 @@ pub enum LlamaLoraAdapterRemoveError {
 /// get the time (in microseconds) according to llama.cpp
 /// ```
 /// # use llama_cpp_2::llama_time_us;
+/// # use llama_cpp_2::llama_backend::LlamaBackend;
+/// let backend = LlamaBackend::init().unwrap();
 /// let time = llama_time_us();
 /// assert!(time > 0);
 /// ```
@@ -296,6 +313,8 @@ pub enum ApplyChatTemplateError {
 ///
 /// ```
 /// # use std::time::Duration;
+/// # use llama_cpp_2::llama_backend::LlamaBackend;
+/// let backend = LlamaBackend::init().unwrap();
 /// use llama_cpp_2::ggml_time_us;
 ///
 /// let start = ggml_time_us();
