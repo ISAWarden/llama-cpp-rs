@@ -237,6 +237,7 @@ fn main() {
         .header("wrapper.h")
         .clang_arg(format!("-I{}", llama_src.join("include").display()))
         .clang_arg(format!("-I{}", llama_src.join("ggml/include").display()))
+        .clang_arg(format!("--target={}", target_triple))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .derive_partialeq(true)
         .allowlist_function("ggml_.*")
@@ -267,6 +268,7 @@ fn main() {
     config.define("LLAMA_BUILD_TESTS", "OFF");
     config.define("LLAMA_BUILD_EXAMPLES", "OFF");
     config.define("LLAMA_BUILD_SERVER", "OFF");
+    config.define("LLAMA_BUILD_TOOLS", "OFF");
     config.define("LLAMA_CURL", "OFF");
 
     config.define(
@@ -278,7 +280,11 @@ fn main() {
         config.define("GGML_BLAS", "OFF");
     }
 
-    if (matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) && matches!(profile.as_str(), "Release" | "RelWithDebInfo" | "MinSizeRel"))
+    if (matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc))
+        && matches!(
+            profile.as_str(),
+            "Release" | "RelWithDebInfo" | "MinSizeRel"
+        ))
     {
         // Debug Rust builds under MSVC turn off optimization even though we're ideally building the release profile of llama.cpp.
         // Looks like an upstream bug:
@@ -310,10 +316,7 @@ fn main() {
         } else {
             config.define("ANDROID_PLATFORM", "android-28");
         }
-        if target_triple.contains("aarch64") {
-            config.cflag("-march=armv8.7a");
-            config.cxxflag("-march=armv8.7a");
-        } else if target_triple.contains("armv7") {
+        if target_triple.contains("aarch64") || target_triple.contains("armv7") {
             config.cflag("-march=armv8.7a");
             config.cxxflag("-march=armv8.7a");
         } else if target_triple.contains("x86_64") {
@@ -331,6 +334,16 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=stdc++");
             println!("cargo:rustc-link-lib=c++_shared");
         }
+    }
+
+    if matches!(target_os, TargetOs::Linux)
+        && target_triple.contains("aarch64")
+        && !env::var(format!("CARGO_FEATURE_{}", "native".to_uppercase())).is_ok()
+    {
+        // If the native feature is not enabled, we take off the native ARM64 support.
+        // It is useful in docker environments where the native feature is not enabled.
+        config.define("GGML_NATIVE", "OFF");
+        config.define("GGML_CPU_ARM_ARCH", "armv8-a");
     }
 
     if cfg!(feature = "vulkan") {
