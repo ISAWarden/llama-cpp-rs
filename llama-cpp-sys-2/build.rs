@@ -356,6 +356,17 @@ fn main() {
                 let vulkan_lib_path = Path::new(&vulkan_path).join("Lib");
                 println!("cargo:rustc-link-search={}", vulkan_lib_path.display());
                 println!("cargo:rustc-link-lib=vulkan-1");
+
+                // workaround for this error: "FileTracker : error FTK1011: could not create the new file tracking log file"
+                // it has to do with MSBuild FileTracker not respecting the path
+                // limit configuration set in the windows registry.
+                // I'm not sure why that's a thing, but this makes my builds work.
+                // (crates that depend on llama-cpp-rs w/ vulkan easily exceed the default PATH_MAX on windows)
+                env::set_var("TrackFileAccess", "false");
+                // since we disabled TrackFileAccess, we can now run into problems with parallel
+                // access to pdb files. /FS solves this.
+                config.cflag("/FS");
+                config.cxxflag("/FS");
             }
             TargetOs::Linux => {
                 println!("cargo:rustc-link-lib=vulkan");
@@ -388,18 +399,6 @@ fn main() {
         .always_configure(false);
 
     let build_dir = config.build();
-    let build_info_src = llama_src.join("common/build-info.cpp");
-    let build_info_target = build_dir.join("build-info.cpp");
-    std::fs::rename(&build_info_src,&build_info_target).unwrap_or_else(|move_e| {
-        // Rename may fail if the target directory is on a different filesystem/disk from the source.
-        // Fall back to copy + delete to achieve the same effect in this case.
-        std::fs::copy(&build_info_src, &build_info_target).unwrap_or_else(|copy_e| {
-            panic!("Failed to rename {build_info_src:?} to {build_info_target:?}. Move failed with {move_e:?} and copy failed with {copy_e:?}");
-        });
-        std::fs::remove_file(&build_info_src).unwrap_or_else(|e| {
-            panic!("Failed to delete {build_info_src:?} after copying to {build_info_target:?}: {e:?} (move failed because {move_e:?})");
-        });
-    });
 
     // Search paths
     println!("cargo:rustc-link-search={}", out_dir.join("lib").display());
@@ -410,28 +409,44 @@ fn main() {
     println!("cargo:rustc-link-search={}", build_dir.display());
 
     if cfg!(feature = "cuda") && !build_shared_libs {
+        // Re-run build script if CUDA_PATH environment variable changes
         println!("cargo:rerun-if-env-changed=CUDA_PATH");
 
+        // Add CUDA library directories to the linker search path
         for lib_dir in find_cuda_helper::find_cuda_lib_dirs() {
             println!("cargo:rustc-link-search=native={}", lib_dir.display());
         }
 
-        // Logic from ggml-cuda/CMakeLists.txt
-        println!("cargo:rustc-link-lib=static=cudart_static");
-        if matches!(target_os, TargetOs::Windows(_)) {
-            println!("cargo:rustc-link-lib=static=cublas");
-            println!("cargo:rustc-link-lib=static=cublasLt");
+        // Platform-specific linking
+        if cfg!(target_os = "windows") {
+            // ✅ On Windows, use dynamic linking.
+            // Static linking is problematic because NVIDIA does not provide culibos.lib,
+            // and static CUDA libraries (like cublas_static.lib) are usually not shipped.
+
+            println!("cargo:rustc-link-lib=cudart"); // Links to cudart64_*.dll
+            println!("cargo:rustc-link-lib=cublas"); // Links to cublas64_*.dll
+            println!("cargo:rustc-link-lib=cublasLt"); // Links to cublasLt64_*.dll
+
+            // Link to CUDA driver API (nvcuda.dll via cuda.lib)
+            if !cfg!(feature = "cuda-no-vmm") {
+                println!("cargo:rustc-link-lib=cuda");
+            }
         } else {
+            // ✅ On non-Windows platforms (e.g., Linux), static linking is preferred and supported.
+            // Static libraries like cudart_static and cublas_static depend on culibos.
+
+            println!("cargo:rustc-link-lib=static=cudart_static");
             println!("cargo:rustc-link-lib=static=cublas_static");
             println!("cargo:rustc-link-lib=static=cublasLt_static");
-        }
 
-        // Need to link against libcuda.so unless GGML_CUDA_NO_VMM is defined.
-        if !cfg!(feature = "cuda-no-vmm") {
-            println!("cargo:rustc-link-lib=cuda");
-        }
+            // Link to CUDA driver API (libcuda.so)
+            if !cfg!(feature = "cuda-no-vmm") {
+                println!("cargo:rustc-link-lib=cuda");
+            }
 
-        println!("cargo:rustc-link-lib=static=culibos");
+            // culibos is required when statically linking cudart_static
+            println!("cargo:rustc-link-lib=static=culibos");
+        }
     }
 
     // Link libraries
@@ -452,6 +467,7 @@ fn main() {
 
     match target_os {
         TargetOs::Windows(WindowsVariant::Msvc) => {
+            println!("cargo:rustc-link-lib=advapi32");
             if cfg!(debug_assertions) {
                 println!("cargo:rustc-link-lib=dylib=msvcrtd");
             }
